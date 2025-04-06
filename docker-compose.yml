@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  api:
+    build:
+      context: ./cloud_backend  # Ścieżka do katalogu z Dockerfile backendu
+    ports:
+      - "8081:8081"  # Port, na którym działa API
+    networks:
+      - mynetwork
+  
+  frontend:
+    build:
+      context: ./cloud_frontend  # Ścieżka do katalogu z Dockerfile frontendu
+    ports:
+      - "3000:3000"  # Port, na którym działa frontend
+    depends_on:
+      - api  # Zapewnienie, że frontend poczeka na backend
+    networks:
+      - mynetwork
+
+networks:
+  mynetwork:  # Definicja sieci, która pozwoli kontenerom się komunikować
+    driver: bridge  # Sieć, którą wykorzystują kontenery
