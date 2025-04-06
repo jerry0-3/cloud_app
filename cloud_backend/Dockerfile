@@ -2,6 +2,8 @@ FROM eclipse-temurin:17-jdk-alpine AS builder
 WORKDIR /app
 COPY . .
 RUN chmod +x ./gradlew
+RUN dos2unix ./gradlew
+RUN sh ./gradlew --version
 RUN ./gradlew clean build
 
 FROM eclipse-temurin:17-jdk-alpine
