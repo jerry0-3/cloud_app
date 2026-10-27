@@ -1,0 +1,31 @@
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: cloudapp
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+
+  backend:
+    build: ./backend
+    ports:
+      - "8080:8080"
+    environment:
+      DB_URL: jdbc:postgresql://db:5432/cloudapp
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      APP_AWS_ENABLED: "false"
+      APP_AUTH_ENABLED: "false"
+    depends_on:
+      - db
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:80"
+    environment:
+      BACKEND_URL: http://localhost:8080
+    depends_on:
+      - backend

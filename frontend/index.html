@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <title>System Zgłoszeń Serwisowych - Cloud PoC</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Plik generowany automatycznie przy starcie kontenera ze zmiennej środowiskowej BACKEND_URL -->
+    <script src="config.js"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+</head>
+<body class="bg-light">
+<div id="app" class="container py-4">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h3 class="m-0">🛠️ System Zgłoszeń Serwisowych (Cloud PoC)</h3>
+        <span class="badge bg-dark">Backend API: {{ apiUrl }}</span>
+    </div>
+
+    <!-- Pasek statystyk (GET /api/stats) oraz symulacja opóźnienia (CloudWatch) -->
+    <div class="row mb-4 g-3">
+        <div class="col-md-7">
+            <div class="card h-100 shadow-sm">
+                <div class="card-body d-flex justify-content-between align-items-center">
+                    <div>
+                        <h6 class="text-muted mb-1">Status środowiska (GET /api/stats)</h6>
+                        <div>Tryb pracy: <strong>{{ stats.mode }}</strong></div>
+                        <div class="small mt-1">
+                            Zgłoszenia (RDS): <strong>{{ stats.notesCount }}</strong> |
+                            Komentarze (RDS): <strong>{{ stats.commentsCount }}</strong> |
+                            Załączniki (S3): <strong>{{ stats.attachmentsCount }}</strong>
+                        </div>
+                    </div>
+                    <button @click="fetchStats" class="btn btn-sm btn-outline-primary">Odśwież</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-5">
+            <div class="card h-100 border-warning shadow-sm">
+                <div class="card-body">
+                    <h6 class="card-title mb-1">⚡ Symulacja awarii wydajności (Punkt 8)</h6>
+                    <p class="small text-muted mb-2">Wywołuje 15x <code>GET /api/notes?delayMs=3500</code> pod alarm CloudWatch.</p>
+                    <button @click="simulateSlowRequests" :disabled="simulating" class="btn btn-sm btn-warning w-100">
+                        {{ simulating ? `Wykonywanie zapytań (${simProgress}/15)...` : 'Wywołaj 15 wolnych zapytań (3.5s)' }}
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Token JWT Cognito (potrzebny po włączeniu APP_AUTH_ENABLED=true w chmurze) -->
+    <div class="card mb-4 shadow-sm">
+        <div class="card-body py-2">
+            <div class="row align-items-center">
+                <div class="col-md-4 small fw-bold">🔒 Token JWT (AWS Cognito):</div>
+                <div class="col-md-8">
+                    <input v-model="jwtToken" class="form-control form-control-sm" placeholder="Opcjonalny lokalnie. W chmurze wklej tutaj token z Cognito.">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-4">
+        <!-- Formularz nowego zgłoszenia (POST /api/notes) -->
+        <div class="col-md-4">
+            <div class="card shadow-sm">
+                <div class="card-body">
+                    <h5>Nowe zgłoszenie serwisowe</h5>
+                    <p class="small text-muted">Zapisuje dane strukturalne w bazie PostgreSQL (`POST /api/notes`).</p>
+                    <input v-model="newNote.title" class="form-control mb-2" placeholder="Tytuł (np. Awaria szafy RACK-2)">
+                    <textarea v-model="newNote.content" class="form-control mb-3" rows="3" placeholder="Opis usterki..."></textarea>
+                    <button @click="createNote" class="btn btn-primary btn-sm w-100">Utwórz zgłoszenie</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Lista zgłoszeń z załącznikami S3 i komentarzami -->
+        <div class="col-md-8">
+            <div class="card shadow-sm">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <h5 class="m-0">Lista zgłoszeń (`GET /api/notes`)</h5>
+                        <button @click="fetchNotes(0)" class="btn btn-sm btn-outline-secondary">Odśwież listę</button>
+                    </div>
+
+                    <div v-if="notes.length === 0" class="text-muted small py-3 text-center">
+                        Brak zgłoszeń w bazie danych. Dodaj pierwsze zgłoszenie po lewej stronie.
+                    </div>
+
+                    <div v-for="note in notes" :key="note.id" class="border rounded p-3 mb-3 bg-white">
+                        <div class="d-flex justify-content-between">
+                            <h6 class="mb-1 fw-bold">{{ note.title }}</h6>
+                            <span class="badge bg-secondary">#{{ note.id }}</span>
+                        </div>
+                        <p class="mb-2">{{ note.content }}</p>
+
+                        <!-- Sekcja załącznika multimedialnego S3 (POST /api/media oraz GET /api/media/{filename}) -->
+                        <div class="bg-light p-2 rounded mb-3 border">
+                            <div v-if="note.attachmentFilename">
+                                <div class="small fw-bold text-success mb-1">
+                                    📎 Załącznik z S3: {{ note.attachmentFilename }}
+                                </div>
+                                <img v-if="isImage(note.attachmentContentType)"
+                                     :src="`${apiUrl}/api/media/${note.attachmentFilename}`"
+                                     class="img-fluid rounded border mb-1"
+                                     style="max-height: 220px;"
+                                     alt="Załącznik zgłoszenia">
+                                <div>
+                                    <a :href="`${apiUrl}/api/media/${note.attachmentFilename}`" target="_blank" class="btn btn-sm btn-outline-dark mt-1">
+                                        Pobierz oryginał (`GET /api/media`)
+                                    </a>
+                                </div>
+                            </div>
+                            <div v-else class="d-flex align-items-center gap-2">
+                                <input type="file" :id="'file-' + note.id" class="form-control form-control-sm">
+                                <button @click="uploadAttachment(note.id)" class="btn btn-sm btn-success text-nowrap">
+                                    Dodaj zdjęcie/plik do S3 (`POST /api/media`)
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Sekcja komentarzy (POST /api/notes/{id}/comments) -->
+                        <div class="ps-3 border-start">
+                            <div v-for="c in note.comments" :key="c.id" class="small text-secondary mb-1">
+                                💬 <strong>{{ c.author }}:</strong> {{ c.text }}
+                            </div>
+                            <div class="input-group input-group-sm mt-2">
+                                <input v-model="commentInputs[note.id]" class="form-control" placeholder="Dodaj komentarz techniczny...">
+                                <button @click="addComment(note.id)" class="btn btn-outline-primary">Dodaj (`POST`)</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+const { createApp } = Vue;
+
+createApp({
+    data() {
+        return {
+            // Automatycznie pobiera adres z pliku config.js wygenerowanego przez kontener Dockera
+            apiUrl: (window.APP_CONFIG && window.APP_CONFIG.BACKEND_URL) ? window.APP_CONFIG.BACKEND_URL : 'http://localhost:8080',
+            jwtToken: '',
+            stats: { mode: '-', notesCount: 0, commentsCount: 0, attachmentsCount: 0 },
+            notes: [],
+            newNote: { title: '', content: '' },
+            commentInputs: {},
+            simulating: false,
+            simProgress: 0
+        }
+    },
+    methods: {
+        getHeaders(isJson = true) {
+            const headers = {};
+            if (isJson) headers['Content-Type'] = 'application/json';
+            if (this.jwtToken) headers['Authorization'] = `Bearer ${this.jwtToken}`;
+            return headers;
+        },
+        isImage(contentType) {
+            return contentType && contentType.startsWith('image/');
+        },
+        async fetchStats() {
+            const res = await fetch(`${this.apiUrl}/api/stats`, { headers: this.getHeaders(false) });
+            if (res.ok) this.stats = await res.json();
+        },
+        async fetchNotes(delayMs = 0) {
+            const res = await fetch(`${this.apiUrl}/api/notes?delayMs=${delayMs}`, { headers: this.getHeaders(false) });
+            if (res.ok) this.notes = await res.json();
+        },
+        async createNote() {
+            if (!this.newNote.title) return alert('Podaj tytuł zgłoszenia!');
+            await fetch(`${this.apiUrl}/api/notes`, {
+                method: 'POST',
+                headers: this.getHeaders(true),
+                body: JSON.stringify(this.newNote)
+            });
+            this.newNote = { title: '', content: '' };
+            this.fetchNotes();
+            this.fetchStats();
+        },
+        async addComment(noteId) {
+            const text = this.commentInputs[noteId];
+            if (!text) return;
+            await fetch(`${this.apiUrl}/api/notes/${noteId}/comments`, {
+                method: 'POST',
+                headers: this.getHeaders(true),
+                body: JSON.stringify({ author: 'Inżynier', text })
+            });
+            this.commentInputs[noteId] = '';
+            this.fetchNotes();
+            this.fetchStats();
+        },
+        async uploadAttachment(noteId) {
+            const fileInput = document.getElementById('file-' + noteId);
+            const file = fileInput.files[0];
+            if (!file) return alert('Wybierz plik z dysku!');
+
+            const formData = new FormData();
+            formData.append('noteId', noteId);
+            formData.append('file', file);
+
+            await fetch(`${this.apiUrl}/api/media`, {
+                method: 'POST',
+                headers: this.getHeaders(false),
+                body: formData
+            });
+            this.fetchNotes();
+            this.fetchStats();
+        },
+        async simulateSlowRequests() {
+            this.simulating = true;
+            this.simProgress = 0;
+            for (let i = 1; i <= 15; i++) {
+                this.simProgress = i;
+                await this.fetchNotes(3500);
+            }
+            this.simulating = false;
+            alert('Wykonano 15 opóźnionych zapytań! Sprawdź logi backendu (lub CloudWatch w chmurze).');
+        }
+    },
+    mounted() {
+        this.fetchStats();
+        this.fetchNotes();
+    }
+}).mount('#app');
+</script>
+</body>
+</html>
